@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: goserver
+  labels:
+    app: goserver
+spec:
+  selector: 
+    matchLabels:
+      app: goserver
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        app: "goserver"
+    spec: # especificacao do container
+      containers:
+        - name: goserver
+          image: "carromesa/go-with-kube:v5.5"
+          startupProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 3 # tempo em segundos testar de quanto em quanto tempo
+            failureThreshold: 30 # quantas vezes pode falhar antes de reiniciar
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 3 # tempo em segundos testar de quanto em quanto tempo
+            failureThreshold: 1 # quantas vezes pode falhar antes de reiniciar
+            # initialDelaySeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8000
+            periodSeconds: 5 # tempo em segundos testar de quanto em quanto tempo
+            failureThreshold: 1 # quantas vezes pode falhar antes de reiniciar
+            timeoutSeconds: 1 # Testando de forma integrada, colocar mais tempo, testando apenas o sistema pode ser um timeout menor
+            successThreshold: 1 # quantas vezes tem que testar para dizer que a aplicação está ok
+            # initialDelaySeconds: 15
+          envFrom:
+            # sem o secret utiliza o configMapRef normalmente
+            - configMapRef:
+                name: goserver-env
+            # se for utilizar o secret utilizar o secretRef abaixo
+            - secretRef:
+                name: goserver-secret
+          # env:
+          #   - name: NAME
+          #     valueFrom:
+          #       configMapKeyRef:
+          #         name: goserver-env
+          #         key: NAME
+          #   - name: AGE
+          #     valueFrom:
+          #       configMapKeyRef:
+          #         name: goserver-env
+          #         key: AGE
+        
+          volumeMounts:
+            - mountPath: "/go/myfamily" # aqui é onde eu quero que fique os meus arquivos, ou seja o volumes.configMap.items.path = family.txt vai para essa pasta!
+              name: "config" # será o nome do volume.name que está logo abaixo
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: configmap-family
+            items:
+            - key: members
+              path: "family.txt"

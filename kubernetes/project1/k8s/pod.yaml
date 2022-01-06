@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "goserver"
+  labels:
+    app: "goserver"
+spec: # especificacao do container
+  containers:
+    - name: goserver
+      image: "carromesa/go-with-kube"
