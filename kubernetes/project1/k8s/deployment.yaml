@@ -16,7 +16,16 @@ spec:
     spec: # especificacao do container
       containers:
         - name: goserver
-          image: "carromesa/go-with-kube:v5.5"
+          image: "carromesa/go-with-kube:v5.6"
+
+          resources:
+            requests: # => MINIMO -> SEQUESTRANDO / RESERVANDO os recursos para o POD
+              cpu: "0.3" # 100m
+              memory: 20Mi
+            limits:
+              cpu: "0.3" # 500m
+              memory: 25Mi
+
           startupProbe:
             httpGet:
               path: /healthz
@@ -62,7 +71,12 @@ spec:
             - mountPath: "/go/myfamily" # aqui é onde eu quero que fique os meus arquivos, ou seja o volumes.configMap.items.path = family.txt vai para essa pasta!
               name: "config" # será o nome do volume.name que está logo abaixo
               readOnly: true
+            - mountPath: "/go/pvc"
+              name: "goserver-volume"
       volumes:
+        - name: goserver-volume # Aqui pode ser qualquer nome
+          persistentVolumeClaim:
+            claimName: goserver-pvc # Esse nome aqui precisa ser o mesmo definido no arquivo pvc.yaml
         - name: config
           configMap:
             name: configmap-family

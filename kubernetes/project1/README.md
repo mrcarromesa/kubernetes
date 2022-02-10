@@ -1158,3 +1158,599 @@ kubectl apply -f k8s/deployment.yaml
 
 
 
+----
+
+## Resources e HPA
+
+- Antes de nossa aplicação ir para produção precisamos ter em mente, quantos pods eu posso ter no meu cluster, quantos sistemas eu posso ter no mesmo cluster
+- E também outro ponto importante é ter uma forma de "medir" a aplicação, para isso utilizamos o metrics-server.
+
+- Quando trabalhamos em cloud o metrics-server já vem por padrão com o gks, do gcp, o eks do aws e o aks do azure, porém no kind não vem
+
+- Repositorio do kubernetes metric-server: https://github.com/kubernetes-sigs/metrics-server
+
+- no repositório para utilizar o metric-server ele pede para executar o comando:
+
+```shell
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
+
+- Porém como tem as questões de TLS etc... vamos fazer de uma forma diferente...
+
+- Acessamos a pasta k8s, e executamos o comando:
+
+```shell
+wget https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+```
+
+- será criado o arquivo k8s/components.yaml e ajustamos para metrics-server.yaml
+
+- No arquivo na parte de deployment:
+
+```yaml
+kind: Deployment
+```
+
+ajustamos os args do containers:
+
+adicionamos:
+
+```yaml
+- --kublet-insecure-tls
+```
+
+- E com isso ele irá permitir trabalhar de modo inseguro sem tls
+
+- Por fim executamos o comando:
+
+```shell
+kubectl apply -f k8s/metrics-server.yaml
+```
+
+- Para verificar se está funcionando executamos o comando:
+
+```shell
+kubectl get apiservices
+```
+
+- Irá mostrar todos os serviços que temos disponível e um deles é o do metric-server:
+
+```shell
+v1beta1.metrics.k8s.io 
+```
+
+- Se o Available estiver true então está tudo certo!
+
+----
+
+## Recursos do sistema
+
+- Definir o recurso necessário que para que o serviço rode e os limites também
+
+- Adicionamos isso no arquivo `k8s/deployment.yaml`:
+
+```yaml
+resources:
+  requests: # => MINIMO -> SEQUESTRANDO / RESERVANDO os recursos para o POD
+    cpu: 100m
+    memory: 20Mi
+```
+
+- A unidade de medida para CPU é em milicores, por exemplo uma vCPU de 1 significa que ele tem 1000m e se o meu sistema precisa utilizar metade podemos definir 500m! ou podemos colocar em decimal
+se o meu sistema utiliza metade definimos que ele utiliza 0.5 = 50%
+
+- Se eu colocar números absurdos a aplicação ficará pendente até que os minimos sejam atendidos;
+
+- Outro parametro é o `limits` ou seja até quanto que ele pode usar no máximo.
+
+- no caso da cpu o ideal é que o limit não ultrapasse a soma de pods que utilizaram a cpu
+
+```yaml
+limits:
+  cpu: 500m
+  memory: 25Mi
+```
+
+- Já o caso de memória é limitado
+
+- Feito isso podemos realizar o deployment:
+
+```shell
+kubectl apply -f deployment.yaml
+```
+
+- Para acompanhar como está o consumo podemos executar o comando:
+
+```shell
+kubectl top pod NOME_DO_POD
+```
+
+---
+
+### HPA (Horizontal Pod AutoScaling)
+
+- Não usa apenas a cpu como de escala, é possível utilizar outras metricas e customizadas, na maioria das vezes o HPA de CPU de funcionar.
+
+- Para começar criamos o arquivo `k8s/hpa.yaml`
+
+- Essa parte informamos a especificação:
+
+```yaml
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: goserver
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 30
+```
+
+- Vamos nos basear o kind sempre no Deployment e não no pod, pois ele que é o responsável em criar os pods e "gerenciar"
+- em geral o ideal no minReplicas é de 2 ou mais
+- o maxReplicas é necessário informar se não ele irá tentar adicionar pods de forma infinita
+- e o target fazemos para cpu quando chegar em uma porcentagem.
+
+- Feito isso podemos rodar o comando:
+
+```shell
+kubectl apply -f k8s/hpa.yaml
+```
+
+- Podemos verificar o HPA utilizando o comando:
+
+```shell
+kubectl get hpa
+```
+
+---
+
+### Teste de stress com fortio
+
+- Para isso foi ajustado a função: Healtz do server.go:
+
+```go
+func Healtz(w http.ResponseWriter, r *http.Request) {
+
+	duration := time.Since(startedAt)
+
+	// Testes de estress
+	if duration.Seconds() < 10 {
+		w.WriteHeader(500)
+		w.Write([]byte(fmt.Sprintf("Duration: %v", duration.Seconds())))
+	} else {
+		w.WriteHeader(200)
+		w.Write([]byte("ok"))
+	}
+}
+```
+
+- E realizado o build da nova imagem:
+
+```shell
+docker build -t carromesa/go-with-kube:v5.6 .
+```
+
+- E o push:
+
+```shell
+docker push carromesa/go-with-kube:v5.6 
+```
+
+- E ajustado no arquivo `k8s/deployment.yaml`:
+
+```yaml
+containers:
+  - name: goserver
+    image: "carromesa/go-with-kube:v5.6"
+```
+
+- E executado o apply:
+
+```shell
+kubectl apply -f k8s/deployment.yaml
+```
+
+---
+
+### Fortio
+
+- Repositório: https://github.com/fortio/fortio
+
+- Ferramenta desenvolvida em go ajuda a criar Teste de stress
+
+- Para iniciar vamos executar o seguinte comando:
+
+```shell
+kubectl run -it fortion --rm --image=fortio/fortio -- load -qps 800 -t 120s -c 70 "http://goserver-service/healthz"
+```
+
+- O comando é parecido com um comando para acessar uma imagem do docker!
+
+- O diferente é a parte do laod, ou seja carregar, -qps = queries por segundo,o -t = segundos de duração, o -c = a conexões simultaneas ou seja quantas threads vão acessar para gerar as 800 queries.
+
+- Na url passamos qual é o service que estamos acessando, conforme o name especificado no arquivo `k8s/service.yaml` na prop `name` e adicionamos a `/` para especificar qual recurso no sistema que iremos testar nesse caso iremos testar o healthz conforme especificado no `server.go`:
+
+```go
+func main() {
+	http.HandleFunc("/healthz", Healtz)
+  // ...
+}
+```
+
+- E em outra aba do terminal executamos o comando para monitorar:
+
+```shell
+watch -n1 kubectl get hpa
+```
+
+- que irá acompanhar a cada um segundo
+
+
+----
+
+## Criar volume persistente
+
+- Criar uma arquivo `k8s/pvc.yaml` (pvc = persiste volume claim)
+
+```yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: goserver-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+```
+
+- Com isso estavmos solicitando um volume persistente de 5gb com acesso de leitura e escrita
+
+- Para aplicar isso utilizamos o comando:
+
+```shell
+kubectl apply -f k8s/pvc.yaml
+```
+
+- Se executarmos o comando:
+
+```shell
+kubectl get pvc
+```
+
+- Vemos que está pendente, isso pq ele espera realizar o bind ou uma conexão para poder ficar "ativo".
+
+- Para isso vamos ajustar o `k8s/deployment.yaml`:
+
+- Debaixo de volumes adicionamos:
+
+```yaml
+volumes:
+  - name: goserver-volume # Aqui pode ser qualquer nome
+    persistentVolumeClaim:
+      claimName: goserver-pvc # Esse nome aqui precisa ser o mesmo definido no arquivo pvc.yaml
+```
+
+- E para montar esse volume precisamos chamar esse volumes.name, no caso `goserver-volume` para montar o volume, podemos informa isso debaixo de `volumeMounts`:
+
+```yaml
+volumeMounts:
+  - mountPath: "/go/pvc"
+    name: "goserver-volume"
+```
+
+- Feito isso atualizamos o deployment:
+
+```shell
+kubectl apply -f k8s/deployment.yaml
+```
+
+- Agora se formos verificar como estar o `pvc` que criamos estará diferente:
+
+```shell
+kubectl get pvc
+```
+
+- Retorna isso:
+
+```shell
+NAME           STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+goserver-pvc   Bound    pvc-15a19d62-4e88-4452-bad5-2c0a9e26d79f   5Gi        RWO            standard       11m
+```
+
+- O status dele está como Bound ou seja foi feito o bind do volume
+
+- Para realizarmos um teste vamos entrar em um pod:
+
+```shell
+kubectl get po
+```
+
+- Pegar um id de um pod e executar o comando:
+
+```shell
+kubectl exec -it ID_DO_POD -- bash  
+```
+
+- Acessar a pasta pvc `cd /go/pvc/` e criar um arquivo:
+
+```shell
+touch oi
+```
+
+- E vamos apagar esse pod:
+
+```shell
+kubectl delete pod ID_DO_POD
+```
+
+- O arquivo não será perdido podemos pegar o novo pod que foi gerado e executar os mesmos comandos o arquivo deve estar lá!
+
+- Um ponto importante é que o tipo de acesso está como `ReadWriteOnce` ou seja outros pods que estiverem em outros nodes não irão necessariamente conseguir acessar
+
+---
+
+## Criando StatefulSet
+
+- Uma introdução sobre isso pode ser encontrada aqui [StatefulSet](https://enormous-platinum-684.notion.site/StatefulSet-1289f6c3f577461f88410f840da8d967)
+
+- Primeiro vamos ver um problema que pode ocorrer quando utiliza volumes com pods random.
+
+- Vamos criar o arquivo `k8s/statefulset.yaml`
+
+- Nesse primeiro momento o kind dele vamos colocar como `Deployment`
+
+- E executamos o comando:
+
+```shell
+kubectl apply -f k8s/statefulset.yaml
+```
+
+- Executando o comando: 
+
+```shell
+kubectl get po
+```
+
+- Eu terei algo como isso:
+
+```shell
+mysql-69c59457b7-7bxc2      1/1     Running            0          21s
+mysql-69c59457b7-9sr2g      1/1     Running            0          25s
+mysql-69c59457b7-b5skz      1/1     Running            0          29s
+```
+
+- Porém não consigo definir quem é o master, então esse é o problema de utilizar o Deployment para lidar com volumes.
+
+- Então vamos remove-los:
+
+```shell
+kubectl delete deploy mysql
+```
+
+- E no arquivo `k8s/statefulset.yaml` alteramos o kind de Deployment para StatefulSet e no spec dele precisamos adicionar o serviceName nesse caso com final -h pois ele será `headless`:
+
+```yaml
+spec:
+  serviceName: mysql-h
+```
+
+- Feito isso iremos executar o comando:
+
+```shell
+kubectl apply -f k8s/statefulset.yaml
+```
+
+- Dessa forma ele cria os pods com esses nomes:
+
+```shell
+NAME                        READY   STATUS              RESTARTS   AGE
+mysql-0                     1/1     Running             0          19s
+mysql-1                     1/1     Running             0          15s
+mysql-2                     0/1     ContainerCreating   0          3s
+```
+
+- Se precisarmos escalar fica bem mais simples,
+
+- Ou seja se aumentarmos a quantidade de replica ele irá pegar sempre do último e criando os seguintes um de cada vez
+
+- E realizando um downsize ou seja diminuir o número de replicas, ele irá remover uma por uma na ordem contrária
+
+- Porém caso seja necessário criar os pods de forma paralela só adicionar no spec do arquivo yaml a propriedade `podManagementPolicy` com valor `Parallel` e remover o número de replicas
+
+- Antes de aplicar é necessário remover o anterior:
+
+```shell
+kubectl delete statefulset mysql
+```
+
+- Depois só aplicar:
+
+```shell
+kubectl apply -f k8s/statefulset.yaml
+```
+
+- Para escalar também podemos utilizar via cli:
+
+```shell
+kubectl scale statefulset  mysql --replicas=5
+```
+
+- E será criado todos em paralelo
+
+---
+
+## Criando headless service
+
+- Uma introdução sobre isso pode ser encontrada aqui [StatefulSet](https://enormous-platinum-684.notion.site/StatefulSet-1289f6c3f577461f88410f840da8d967)
+
+- Iremos criar o arquivo `mysql-service-h.yaml` o `h` é de headless:
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql-h
+spec:
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+  clusterIP: None
+```
+
+- a prop `clusterIP: None` informamos que ele não irá utilizar IP mas sim o service name, ou seja será via DNS, E como ele irá resolver ou saber esse nome?
+O name que utilizamos no `k8s/statefulset.yaml`, que no caso foi `serviceName: mysql-h` precisa ser o mesmo em `k8s/mysql-service-h.yaml` em `metadata.name`,
+
+- Quando eu criar o `statefulset.yaml`, será criado o `mysql-h` e quando eu for criar o `mysql-service-h.yaml` que será `clusterIP: None`, o kubernetes irá resolver daí via dns utilizando o `metadata.name`.
+
+- No arquivo `statefulset.yaml` vamos adicionar 3 replicas: 
+
+```yaml
+spec:
+  replicas: 4
+```
+
+- Para garantir vamos remover o statefulset criado anteriormente executando o comando:
+
+```shell
+kubectl delete statefulset mysql
+```
+
+- E executar o comando:
+
+```shell
+kubectl apply -f k8s/statefulset.yaml
+```
+
+E o comando:
+
+```shell
+kubectl apply -f k8s/mysql-service-h.yaml
+```
+
+- Executando o comando:
+
+```shell
+kubectl get po
+```
+
+- Obtemos o seguinte resultado:
+
+```shell
+mysql-0                     1/1     Running   0          21s
+mysql-1                     1/1     Running   0          21s
+mysql-2                     1/1     Running   0          21s
+mysql-3                     1/1     Running   0          20s
+```
+
+- Então quando alguém precisar gravar alguma informação direcionamos para o mysql-0
+
+- Executando o comanod:
+
+```shell
+kubectl get svc
+```
+
+- Obtemos o seguinte:
+
+```shell
+mysql              ClusterIP      None            <none>        3306/TCP       9m24s
+```
+
+
+- Para verificar se o mysql está acessivel via nome podemos realizar um ping dentro de um pod:
+
+```shell
+kubectl exec -it NOME_DO_POD --bash
+```
+
+- E damos um ping no mysql-h:
+
+```shell
+ping mysql-h
+```
+
+- E para pingar um especifico utilizamos o comando:
+
+```shell
+ping mysql-0.mysql-h
+```
+
+- Ou seja dentro de um serviço conseguimos chamar o mysql com base no nome.
+
+
+---
+
+## Criar volumes dinamicamente com statefulset
+
+- A ideia é criar um volume persistente para cada replica para isso iremos ajustar o arquivo `statefulset.yaml`, toda vez que subir uma replica ele irá aplicar o template:
+
+```yaml
+# statefulset.yaml
+  volumeClaimTemplates:
+  - metadata:
+      name: mysql-volume
+    spec:
+      accessModes:
+        - ReadWriteOnce
+      resources:
+        requests:
+          storage: 5Gi
+```
+
+Para o nosso mysql utilizar o volume adicionamos essa prop:
+
+```yaml
+# statefulset.yaml
+  volumeMounts:
+    - mountPath: /var/lib/mysql
+      name: mysql-volume
+```
+
+- Para testar inicialmente removeremos o statefulset criado anteriormente com o comando:
+
+```shell
+kubectl delete statefulset mysql
+```
+- E vamos cria-lo novamente:
+
+```shell
+kubectl apply -f k8s/statefulset.yaml
+```
+
+- Para verificar se foram criados os volumes podemos utilizar o seguinte comando:
+
+```shell
+kubectl get pvc
+```
+
+- pvc = persistent volume claim
+
+- Com o comando acima devemos obter algo assim:
+
+```shell
+NAME                   STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+mysql-volume-mysql-0   Bound    pvc-44ab1f5f-c500-4252-b860-b407c6423400   5Gi        RWO            standard       109s
+mysql-volume-mysql-1   Bound    pvc-270a7133-ca64-4118-b391-8df6ea418db3   5Gi        RWO            standard       66s
+mysql-volume-mysql-2   Bound    pvc-f229edfe-0d0f-425e-a016-15449786c9f4   5Gi        RWO            standard       66s
+mysql-volume-mysql-3   Bound    pvc-4ed04809-068e-4c5e-b810-b0673730c6b1   5Gi        RWO            standard       66s
+```
+
+- E caso removamos um pod, o kubernets irá recria-lo e atachar o volume! Pois o volume não será removido!
+
+---
+
+## Banco de dados no Kubernetes?
+
+- Isso é complexo...
+
+- Para uma aplicação critica que precisa tunar e melhorar o banco de dados
+
+- Então se for uma aplicação pequena que não irá crescer, sim até tudo bem!
+
+- Mas para aplicação criticas, escolha serviços gerenciaveis RDS da AWS por exemplo, ou outros etc...
+
+- Um exemplo que pode utilizar a base no kubernetes pode ser o wordpress um blog um pouco mais simples, podemos utilizar o kubernetes

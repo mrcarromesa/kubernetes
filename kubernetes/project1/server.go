@@ -60,7 +60,16 @@ func Healtz(w http.ResponseWriter, r *http.Request) {
 	// }
 
 	// UTILIZADO PARA TESTAR O READINESS
-	if duration.Seconds() < 10 || duration.Seconds() > 30 {
+	// if duration.Seconds() < 10 || duration.Seconds() > 30 {
+	// 	w.WriteHeader(500)
+	// 	w.Write([]byte(fmt.Sprintf("Duration: %v", duration.Seconds())))
+	// } else {
+	// 	w.WriteHeader(200)
+	// 	w.Write([]byte("ok"))
+	// }
+
+	// Testes de estress
+	if duration.Seconds() < 10 {
 		w.WriteHeader(500)
 		w.Write([]byte(fmt.Sprintf("Duration: %v", duration.Seconds())))
 	} else {
